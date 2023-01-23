@@ -4,9 +4,12 @@
 10 + 5
 
 
-cal a = 5
+cal a = 2
 
+cal str = "ce faci"
+cal alt_str = "frate"
 
+str + ", " + alt_str + "?"
 
 10 + 5 * a * (a + 5)
 

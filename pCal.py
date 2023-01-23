@@ -239,7 +239,7 @@ class Lexer:
                     return self.get_identifier_token()
                 self.errors.append(IllegalCharError("'" + self.current_char + "'", self.pos.duplicate()))
             self.advance()
-        return Token(TokenType.END)
+        return Token(TokenType.END, pos=self.pos)
     
     def lex(self):
         tokens = []
@@ -290,7 +290,7 @@ class Lexer:
         while self.current_char != '"':
             if self.current_char == None:
                 self.errors.append(InvalidSyntaxError("Expected '\"'", start_pos))
-                return Token(TokenType.STR)
+                return Token(TokenType.STR, pos=start_pos)
             if escape_character:
                 value += escape_characters.get(self.current_char, self.current_char)
                 escape_character = False
@@ -302,7 +302,7 @@ class Lexer:
             self.advance()
         
         self.advance()
-        return Token(TokenType.STR, value, start_pos)
+        return Token(TokenType.STR, value, pos=start_pos)
     
     def get_comparison(self, token_type):
         start_pos = self.pos.duplicate()
@@ -337,10 +337,12 @@ class Parser:
     
     def parse(self):
         result = ParseResult()
-        instructions = self.instructions()
+        instructions = result.register(self.instructions())
+        if result.error:
+            return result
         if (self.tokens[self.pos].type != TokenType.END):
             return result.failure(InvalidSyntaxError("Not good", self.tokens[self.pos].pos))
-        return instructions
+        return result.success(instructions)
     
     def factor(self):
         result = ParseResult()
