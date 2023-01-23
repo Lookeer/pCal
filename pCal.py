@@ -123,6 +123,9 @@ class Node:
 class NumberNode(Node):
     pass
 
+class StringNode(Node):
+    pass
+
 class UnaryOperationNode(Node):
     def __init__(self, token, node):
         super().__init__(token)
@@ -185,7 +188,10 @@ class Lexer:
         self.expression = expression
         self.pos = Position(0, 1, file_name)
         self.file_name = file_name
-        self.current_char = expression[0]
+        try:
+            self.current_char = expression[0]
+        except:
+            return
     
     def get_next_token(self):
         while self.pos.index < len(self.expression):
@@ -213,6 +219,8 @@ class Lexer:
             elif self.current_char == ')':
                 self.advance()
                 return Token(TokenType.RPAREN, pos=self.pos)
+            elif self.current_char == '"':
+                return self.get_string()
             elif self.current_char == '<':
                 return self.get_comparison(TokenType.LSR)
             elif self.current_char == '>':
@@ -271,6 +279,31 @@ class Lexer:
         token_type = TokenType.KEYWORD if value in KEYWORDS else TokenType.IDENTIFIER
         return Token(token_type, value, pos=start_pos)
     
+    def get_string(self):
+        value = ""
+        start_pos = self.pos.duplicate()
+        escape_characters = {'n': '\n',
+                             't': '\t'}
+        self.advance()
+        escape_character = False
+
+        while self.current_char != '"':
+            if self.current_char == None:
+                self.errors.append(InvalidSyntaxError("Expected '\"'", start_pos))
+                return Token(TokenType.STR)
+            if escape_character:
+                value += escape_characters.get(self.current_char, self.current_char)
+                escape_character = False
+            else:
+                if self.current_char == "\\":
+                    escape_character = True
+                else:
+                    value += self.current_char
+            self.advance()
+        
+        self.advance()
+        return Token(TokenType.STR, value, start_pos)
+    
     def get_comparison(self, token_type):
         start_pos = self.pos.duplicate()
         self.advance()
@@ -322,6 +355,10 @@ class Parser:
         elif t.type == TokenType.INT or t.type == TokenType.FLOAT:
             self.advance()
             return result.success(NumberNode(t))
+        
+        elif t.type == TokenType.STR:
+            self.advance()
+            return result.success(StringNode(t))
 
         elif t.type == TokenType.LPAREN:
             self.advance()
@@ -392,7 +429,7 @@ class Parser:
             instructions.append(instr)
         while self.tokens[self.pos].type == TokenType.ENDL:
             self.advance()
-            if self.tokens[self.pos].type != TokenType.END:
+            if self.tokens[self.pos].type != TokenType.END and self.tokens[self.pos].type != TokenType.ENDL:
                 instr = result.register(self.instr())
                 if result.error:
                     return result
@@ -432,13 +469,22 @@ class Interpreter:
             return result.success(instructions)
         elif isinstance(node, NumberNode):
             return result.success(self.int_or_float(node))
+        elif isinstance(node, StringNode):
+            return result.success(node.token.value)
         elif isinstance(node, BinaryOperationNode):
+            int_float_operation = 0
             left = result.register(self.evaluate(node.left, context))
             if result.error:
                 return result
+            if type(left) == int or type(left) == float:
+                int_float_operation += 1
             right = result.register(self.evaluate(node.right, context))
             if result.error:
                 return result
+            if type(right) == int or type(right) == float:
+                int_float_operation += 1
+            if type(left) != type(right) and int_float_operation != 2:
+                return result.failure(RuntimeError(f"Can not do operation on {type(left)} and {type(right)}", node.token.pos))
             if node.token.type == TokenType.ADD:
                 return result.success(left + right)
             elif node.token.type == TokenType.SUB:
