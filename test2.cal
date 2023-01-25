@@ -1,5 +1,5 @@
 say("a = ")
-cal a = <give>
+cal a = <give> + 2
 say("b = ")
 cal b = <give>
 

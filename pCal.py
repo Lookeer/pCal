@@ -154,6 +154,11 @@ class AccessNode(Node):
     def __init__(self, name_token):
         self.name_token = name_token
 
+class DeclarationNode(Node):
+    def __init__(self, name_token, value_node = None):
+        self.name_token = name_token
+        self.value_node = value_node
+
 class AssignmentNode(Node):
     def __init__(self, name_token, value_node):
         self.name_token = name_token
@@ -161,6 +166,7 @@ class AssignmentNode(Node):
     
     def __repr__(self):
         return f'({self.name_token} = {self.value_node})'
+
 
 class InstructionsNode(Node):
     def __init__(self, instruction_nodes):
@@ -341,8 +347,9 @@ class Lexer:
 
 class Parser:
     # instructions : "\n"* instr ("\n"+ instr)* "\n"*
-    # instr : assignment | comp-expr | say-instr
-    # assignment : "cal" IDENTIFIER "=" comp-expr | IDENTIFIER "=" comp-expr
+    # instr : declaration | assignment | comp-expr | say-instr
+    # declaration : "cal" IDENTIFIER ("=" comp-expr)?
+    # assignment : IDENTIFIER "=" comp-expr
     # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
@@ -458,6 +465,9 @@ class Parser:
         return result.failure(InvalidSyntaxError('Expected "("', self.tokens[self.pos].pos))
 
     def assignment(self):
+        pass
+
+    def declaration(self):
         result = ParseResult()
         self.advance()
 
@@ -469,7 +479,9 @@ class Parser:
                 comp_expr = result.register(self.comp_expr())
                 if result.error:
                     return result
-                return result.success(AssignmentNode(var_name_token, comp_expr))
+                return result.success(DeclarationNode(var_name_token, comp_expr))
+            else:
+                return result.success(DeclarationNode(var_name_token))
         return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
     
     def instr(self):
@@ -619,10 +631,19 @@ class Interpreter:
             elif node.token.type == TokenType.NOT:
                 value = not value
             return result.success(value)
-        elif isinstance(node, AssignmentNode):
+        elif isinstance(node, DeclarationNode):
             name = node.name_token.value
             if context.symbol_table.get_var(name):
-                pass
+                result.failure(RuntimeError(f'Variable "{name}" is already defined', node.name_token.pos))
+            value = result.register(self.evaluate(node.value_node, context))
+            if result.error:
+                return result
+            context.symbol_table.set_var(name, value)
+            return result.success(value)
+        elif isinstance(node, AssignmentNode):
+            name = node.name_token.value
+            if not context.symbol_table.get_var(name):
+                result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
             value = result.register(self.evaluate(node.value_node, context))
             if result.error:
                 return result
