@@ -19,27 +19,34 @@ class TokenType(Enum):
     GRE = 14
     NOT = 15
     NEQ = 16
-    LPAREN = 17
-    RPAREN = 18
-    ENDL = 19
-    END = 20
+    ISEQ = 17
+    LPAREN = 18
+    RPAREN = 19
+    SEMICOL = 20
+    ENDL = 21
+    EOF = 22
 
-KEYWORDS = ['cal', 'if']
+KEYWORDS = ['cal', 'if', 'else', 'True', 'False', 'end', 'say']
 
 class Position:
-    def __init__(self, index, line, file_name):
+    def __init__(self, index, line, file_name, line_text):
         self.index = index
         self.line = line
         self.file_name = file_name
+        self.line_text = line_text
     
-    def advance(self, current_char):
+    def advance(self, current_char, text):
         self.index += 1
 
         if current_char == '\n':
             self.line += 1
+            try:
+                self.line_text = text.splitlines()[self.line - 1]
+            except:
+                pass
     
     def duplicate(self):
-        return Position(self.index, self.line, self.file_name)
+        return Position(self.index, self.line, self.file_name, self.line_text)
 
 class Token:
     def __init__(self, type : TokenType, value = None, pos : Position = None):
@@ -99,7 +106,7 @@ class Error:
         self.pos = pos
     
     def __repr__(self):
-        return f'File "{self.pos.file_name}" at line {self.pos.line}:\n  {self.name}: {self.info}'
+        return f'File "{self.pos.file_name}" at line {self.pos.line}:\n\t"{self.pos.line_text}"\n{self.name}: {self.info}'
 
 class IllegalCharError(Error):
     def __init__(self, info, pos):
@@ -116,11 +123,11 @@ class RuntimeError(Error):
 class Node:
     def __init__(self, token : Token):
         self.token = token
-    
-    def __repr__(self):
-        return f'{self.token}'
 
 class NumberNode(Node):
+    pass
+
+class BoolNode(Node):
     pass
 
 class StringNode(Node):
@@ -160,9 +167,13 @@ class InstructionsNode(Node):
         self.instruction_nodes = instruction_nodes
 
 class IfNode(Node):
-    def __init__(self, condition_node, else_node = None):
-        self.condition_node = condition_node
-        self.else_node = else_node
+    def __init__(self, main_case, else_case = None):
+        self.main_case = main_case
+        self.else_case = else_case
+
+class SayNode(Node):
+    def __init__(self, node):
+        self.node = node
 
 class Context:
     def __init__(self, name):
@@ -186,12 +197,10 @@ class SymbolTable():
 class Lexer:
     def __init__(self, expression : str, file_name : str):
         self.expression = expression
-        self.pos = Position(0, 1, file_name)
+        self.pos = Position(-1, 1, file_name, "")
         self.file_name = file_name
-        try:
-            self.current_char = expression[0]
-        except:
-            return
+        self.current_char = ""
+        self.advance()
     
     def get_next_token(self):
         while self.pos.index < len(self.expression):
@@ -211,8 +220,7 @@ class Lexer:
                 self.advance()
                 return Token(TokenType.MOD, pos=self.pos)
             elif self.current_char == '=':
-                self.advance()
-                return Token(TokenType.EQ, pos=self.pos)
+                return self.get_comparison(TokenType.EQ)
             elif self.current_char == '(':
                 self.advance()
                 return Token(TokenType.LPAREN, pos=self.pos)
@@ -227,6 +235,9 @@ class Lexer:
                 return self.get_comparison(TokenType.GRT)
             elif self.current_char == '!':
                 return self.get_comparison(TokenType.NOT)
+            elif self.current_char == ':':
+                self.advance()
+                return Token(TokenType.SEMICOL, pos=self.pos)
             elif self.current_char == '\n':
                 self.advance()
                 return Token(TokenType.ENDL, pos=self.pos)
@@ -239,13 +250,13 @@ class Lexer:
                     return self.get_identifier_token()
                 self.errors.append(IllegalCharError("'" + self.current_char + "'", self.pos.duplicate()))
             self.advance()
-        return Token(TokenType.END, pos=self.pos)
+        return Token(TokenType.EOF, pos=self.pos)
     
     def lex(self):
         tokens = []
         self.errors = []
         t = self.get_next_token()
-        while t.type !=  TokenType.END:
+        while t.type !=  TokenType.EOF:
             tokens.append(t)
             t = self.get_next_token()
         tokens.append(t)
@@ -315,21 +326,25 @@ class Lexer:
                 return Token(TokenType.GRE, pos=start_pos)
             elif (token_type == TokenType.NOT):
                 return Token(TokenType.NEQ, pos=start_pos)
+            elif (token_type == TokenType.EQ):
+                return Token(TokenType.ISEQ, pos=start_pos)
+
         return Token(token_type, pos=start_pos)
     
     def advance(self):
-        self.pos.advance(self.current_char)
+        self.pos.advance(self.current_char, self.expression)
         self.current_char = self.expression[self.pos.index] if self.pos.index < len(self.expression) else None
 
 class Parser:
     # instructions : "\n"* instr ("\n"+ instr)* "\n"*
-    # instr : assignment | comp-expr
+    # instr : assignment | comp-expr | say-instr
     # assignment : "cal" IDENTIFIER "=" math-expr | IDENTIFIER "=" math-expr
-    # if-expr : "if" comp-expr "{"
+    # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
     # term   : factor ((MUL|DIV|MOD) factor)*
-    # factor : NUM | IDENTIFIER | (ADD|SUB) factor | "(" comp-expr ")"
+    # factor : NUM | IDENTIFIER | (ADD|SUB) factor | "(" comp-expr ")" | if-stat
+    # if-stat : "if" comp-expr ":" ("\n" instructions) "end"
 
     def __init__(self, tokens):
         self.tokens = tokens
@@ -340,8 +355,8 @@ class Parser:
         instructions = result.register(self.instructions())
         if result.error:
             return result
-        if (self.tokens[self.pos].type != TokenType.END):
-            return result.failure(InvalidSyntaxError("Not good", self.tokens[self.pos].pos))
+        if (self.tokens[self.pos].type != TokenType.EOF):
+            return result.failure(InvalidSyntaxError("Unrecognized grammar", self.tokens[self.pos].pos))
         return result.success(instructions)
     
     def factor(self):
@@ -357,6 +372,10 @@ class Parser:
         elif t.type == TokenType.INT or t.type == TokenType.FLOAT:
             self.advance()
             return result.success(NumberNode(t))
+        
+        elif t.equals(TokenType.KEYWORD, "True") or t.equals(TokenType.KEYWORD, "False"):
+            self.advance()
+            return result.success(BoolNode(t))
         
         elif t.type == TokenType.STR:
             self.advance()
@@ -375,6 +394,16 @@ class Parser:
         elif t.type == TokenType.IDENTIFIER:
             self.advance()
             return result.success(AccessNode(t))
+        
+        elif t.equals(TokenType.KEYWORD, "if"):
+            self.advance()
+            if_statement = result.register(self.if_statement())
+            if result.error:
+                return result
+            return result.success(if_statement)
+        
+        elif t.equals(TokenType.KEYWORD, "end"):
+            return result.success(Node(Token(TokenType.KEYWORD, pos=t.pos)))
 
         return result.failure(InvalidSyntaxError("Expected a number or identifier", t.pos))
     
@@ -394,15 +423,33 @@ class Parser:
                 return result
             return result.success(UnaryOperationNode(op_token, node))
         
-        node = result.register(self.do_operation(self.math_expr, (TokenType.LSR, TokenType.LSE, TokenType.GRT, TokenType.GRE, TokenType.NEQ)))
+        node = result.register(self.do_operation(self.math_expr, (TokenType.LSR, TokenType.LSE, TokenType.GRT, TokenType.GRE, TokenType.NEQ, TokenType.ISEQ)))
         if result.error:
             return result
         
         return result.success(node)
+    
+    def say_instr(self):
+        result = ParseResult()
+        self.advance()
+
+        if (self.tokens[self.pos].type == TokenType.LPAREN):
+            self.advance()
+            comp_expr = result.register(self.comp_expr())
+            if result.error:
+                return result
+            if (self.tokens[self.pos].type == TokenType.RPAREN):
+                self.advance()
+                return result.success(SayNode(comp_expr))
+                
+            return result.failure(InvalidSyntaxError('Expected ")"', self.tokens[self.pos].pos))
+
+        return result.failure(InvalidSyntaxError('Expected "("', self.tokens[self.pos].pos))
 
     def assignment(self):
         result = ParseResult()
         self.advance()
+
         if self.tokens[self.pos].type == TokenType.IDENTIFIER:
             var_name_token = self.tokens[self.pos]
             self.advance()
@@ -417,6 +464,8 @@ class Parser:
     def instr(self):
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "cal"):
             return self.assignment()
+        elif self.tokens[self.pos].equals(TokenType.KEYWORD, "say"):
+            return self.say_instr()
         return self.comp_expr()
     
     def instructions(self):
@@ -424,19 +473,44 @@ class Parser:
         instructions = []
         while self.tokens[self.pos].type == TokenType.ENDL:
             self.advance()
-        if self.tokens[self.pos].type != TokenType.END:
+        if self.tokens[self.pos].type != TokenType.EOF:
             instr = result.register(self.instr())
             if result.error:
                 return result
             instructions.append(instr)
         while self.tokens[self.pos].type == TokenType.ENDL:
             self.advance()
-            if self.tokens[self.pos].type != TokenType.END and self.tokens[self.pos].type != TokenType.ENDL:
+            if self.tokens[self.pos].type != TokenType.EOF and self.tokens[self.pos].type != TokenType.ENDL:
                 instr = result.register(self.instr())
                 if result.error:
                     return result
                 instructions.append(instr)
         return result.success(InstructionsNode(instructions))
+    
+    def if_statement(self):
+        result = ParseResult()
+
+        comp_expr = result.register(self.comp_expr())
+        if result.error:
+            return result
+        
+        if self.tokens[self.pos].type != TokenType.SEMICOL:
+            return result.failure(InvalidSyntaxError("Expected ':'", self.tokens[self.pos].pos))
+        
+        self.advance()
+        if self.tokens[self.pos].type == TokenType.ENDL:
+            self.advance()
+            instructions = result.register(self.instructions())
+            if result.error:
+                return result
+            
+            if self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
+                self.advance()
+                return result.success(IfNode((comp_expr, instructions)))
+            
+            return result.failure(InvalidSyntaxError("Expected \"end\"", self.tokens[self.pos].pos))
+        
+        return result.failure(InvalidSyntaxError("Expected new line", self.tokens[self.pos].pos))
     
     def do_operation(self, func, operations):
         result = ParseResult()
@@ -465,28 +539,29 @@ class Interpreter:
         if isinstance(node, InstructionsNode):
             instructions = []
             for instruction_node in node.instruction_nodes:
-                instructions.append(result.register(self.evaluate(instruction_node, context)))
+                value = result.register(self.evaluate(instruction_node, context))
+                if value != None:
+                    instructions.append(value)
                 if result.error:
                     return result
             return result.success(instructions)
         elif isinstance(node, NumberNode):
             return result.success(self.int_or_float(node))
+        elif isinstance(node, BoolNode):
+            return result.success(True if node.token.value == "True" else False)
         elif isinstance(node, StringNode):
             return result.success(node.token.value)
         elif isinstance(node, BinaryOperationNode):
-            int_float_operation = 0
             left = result.register(self.evaluate(node.left, context))
             if result.error:
                 return result
-            if type(left) == int or type(left) == float:
-                int_float_operation += 1
             right = result.register(self.evaluate(node.right, context))
             if result.error:
                 return result
-            if type(right) == int or type(right) == float:
-                int_float_operation += 1
-            if type(left) != type(right) and int_float_operation != 2:
-                return result.failure(RuntimeError(f"Can not do operation on {type(left)} and {type(right)}", node.token.pos))
+            try:
+                left + right
+            except:
+                return result.failure(RuntimeError(f"Can not do operation on  and ", node.token.pos))
             if node.token.type == TokenType.ADD:
                 return result.success(left + right)
             elif node.token.type == TokenType.SUB:
@@ -511,6 +586,8 @@ class Interpreter:
                 return result.success(left <= right)
             elif node.token.type == TokenType.NEQ:
                 return result.success(left != right)
+            elif node.token.type == TokenType.ISEQ:
+                return result.success(left == right)
         elif isinstance(node, UnaryOperationNode):
             value = result.register(self.evaluate(node.node, context))
             if result.error:
@@ -536,11 +613,27 @@ class Interpreter:
                 return result.success(value)
             return result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
         elif isinstance(node, IfNode):
-            condition = result.register(self.evaluate(node.condition_node, context))
+            condition, instructions = node.main_case
+            condition = result.register(self.evaluate(condition, context))
             if result.error:
                 return result
             if condition:
-                pass
+                instructions = result.register(self.evaluate(instructions, context))
+                if result.error:
+                    return result
+                return result.success(instructions)
+            return result.success(None)
+        elif isinstance(node, SayNode):
+            value = result.register(self.evaluate(node.node, context))
+            if result.error:
+                return result
+            print(value)
+            return result.success(value)
+        elif isinstance(node, InputNode):
+            value = input()
+            
+        elif isinstance(node, Node):
+            return result.success(None)
     
     def int_or_float(self, node):
         if node.token.type == TokenType.INT:
@@ -555,7 +648,7 @@ def execute(file_name):
     except IOError:
         print(f"Error: File \"{file_name}\" does not exist.")
         return
-    lexer = Lexer(file.read(), "test.cal")
+    lexer = Lexer(file.read(), file_name)
     tokens = lexer.lex()
     if len(lexer.errors) > 0:
         for e in lexer.errors:
@@ -572,8 +665,7 @@ def execute(file_name):
             if (result.error):
                 print(result.error)
             else:
-                for res in result.value:
-                    print(res)
+                pass
 
 if len(sys.argv) > 1:
     execute(sys.argv[1])

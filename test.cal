@@ -1,17 +1,17 @@
+cal testing = 5
 
-
-
-10 + 5
-
+if testing >= 5:
+    say("foarte bine vere")
+end
 
 cal a = 2
 
 cal str = "ce faci"
 cal alt_str = "frate"
 
-str + ", " + alt_str + "?"
+say(str + ", " + alt_str + "?")
 
-10 + 5 * a * (a + 5)
+say(10 + 5 * a * (a + 5))
 
 
 

@@ -1,0 +1,9 @@
+cal a = 36
+cal b = 13
+
+if (a > b):
+    say(a-b)
+end
+if (a < b):
+    say(b-a)
+end
