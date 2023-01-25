@@ -1,5 +1,7 @@
-cal a = 36
-cal b = 13
+say("a = ")
+cal a = <give>
+say("b = ")
+cal b = <give>
 
 if (a > b):
     say(a-b)

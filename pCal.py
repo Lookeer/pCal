@@ -26,7 +26,7 @@ class TokenType(Enum):
     ENDL = 21
     EOF = 22
 
-KEYWORDS = ['cal', 'if', 'else', 'True', 'False', 'end', 'say']
+KEYWORDS = ['cal', 'if', 'else', 'True', 'False', 'end', 'say', 'give']
 
 class Position:
     def __init__(self, index, line, file_name, line_text):
@@ -174,6 +174,10 @@ class IfNode(Node):
 class SayNode(Node):
     def __init__(self, node):
         self.node = node
+
+class InputNode(Node):
+    def __init__(self):
+        pass
 
 class Context:
     def __init__(self, name):
@@ -338,12 +342,13 @@ class Lexer:
 class Parser:
     # instructions : "\n"* instr ("\n"+ instr)* "\n"*
     # instr : assignment | comp-expr | say-instr
-    # assignment : "cal" IDENTIFIER "=" math-expr | IDENTIFIER "=" math-expr
+    # assignment : "cal" IDENTIFIER "=" comp-expr | IDENTIFIER "=" comp-expr
     # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
     # term   : factor ((MUL|DIV|MOD) factor)*
-    # factor : NUM | IDENTIFIER | (ADD|SUB) factor | "(" comp-expr ")" | if-stat
+    # factor : NUM | BOOL | STR | IDENTIFIER | input | (ADD|SUB) factor | "(" comp-expr ")" | if-stat
+    # input : "<" give ">"
     # if-stat : "if" comp-expr ":" ("\n" instructions) "end"
 
     def __init__(self, tokens):
@@ -380,6 +385,12 @@ class Parser:
         elif t.type == TokenType.STR:
             self.advance()
             return result.success(StringNode(t))
+        
+        elif t.type == TokenType.LSR:
+            input_expr = result.register(self.input_expr())
+            if result.error:
+                return result
+            return result.success(input_expr)
 
         elif t.type == TokenType.LPAREN:
             self.advance()
@@ -512,6 +523,17 @@ class Parser:
         
         return result.failure(InvalidSyntaxError("Expected new line", self.tokens[self.pos].pos))
     
+    def input_expr(self):
+        result = ParseResult()
+        self.advance()
+        if self.tokens[self.pos].equals(TokenType.KEYWORD, "give"):
+            self.advance()
+            if self.tokens[self.pos].type == TokenType.GRT:
+                self.advance()
+                return result.success(InputNode())
+            return result.failure(InvalidSyntaxError('Expected "<"', self.tokens[self.pos].pos))
+        return result.failure(InvalidSyntaxError('Expected "give"', self.tokens[self.pos].pos))
+    
     def do_operation(self, func, operations):
         result = ParseResult()
         left = result.register(func())
@@ -627,11 +649,12 @@ class Interpreter:
             value = result.register(self.evaluate(node.node, context))
             if result.error:
                 return result
-            print(value)
+            print(value, end='')
             return result.success(value)
         elif isinstance(node, InputNode):
             value = input()
-            
+            value = self.validate_input(value)
+            return result.success(value)
         elif isinstance(node, Node):
             return result.success(None)
     
@@ -640,6 +663,22 @@ class Interpreter:
             return int(node.token.value)
         elif node.token.type == TokenType.FLOAT:
             return float(node.token.value)
+        return node.token.value
+    
+    def validate_input(self, value):
+        try:
+            return int(value)
+        except:
+            pass
+        try:
+            return float(value)
+        except:
+            pass
+        try:
+            return bool(value)
+        except:
+            pass
+        return value
 
 def execute(file_name):
     context = Context("<program>")
@@ -666,6 +705,7 @@ def execute(file_name):
                 print(result.error)
             else:
                 pass
+    print()
 
 if len(sys.argv) > 1:
     execute(sys.argv[1])
