@@ -26,7 +26,7 @@ class TokenType(Enum):
     ENDL = 21
     EOF = 22
 
-KEYWORDS = ['cal', 'if', 'else', 'True', 'False', 'end', 'say', 'give']
+KEYWORDS = ['cal', 'if', 'elif', 'else', 'while', 'True', 'False', 'end', 'say', 'give']
 
 class Position:
     def __init__(self, index, line, file_name, line_text):
@@ -173,9 +173,14 @@ class InstructionsNode(Node):
         self.instruction_nodes = instruction_nodes
 
 class IfNode(Node):
-    def __init__(self, main_case, else_case = None):
-        self.main_case = main_case
+    def __init__(self, cases, else_case = None):
+        self.cases = cases
         self.else_case = else_case
+
+class WhileNode(Node):
+    def __init__(self, condition, instructions):
+        self.condition = condition
+        self.instructions = instructions
 
 class SayNode(Node):
     def __init__(self, node):
@@ -190,7 +195,13 @@ class Context:
         self.name = name
         self.symbol_table = SymbolTable()
 
-class SymbolTable():
+class NullSymbol:
+    def __repr__(self):
+        return f'NULL'
+
+NULL = NullSymbol()
+
+class SymbolTable:
     def __init__(self):
         self.symbols = {}
     
@@ -207,7 +218,7 @@ class SymbolTable():
 class Lexer:
     def __init__(self, expression : str, file_name : str):
         self.expression = expression
-        self.pos = Position(-1, 1, file_name, "")
+        self.pos = Position(-1, 1, file_name, expression.splitlines()[0])
         self.file_name = file_name
         self.current_char = ""
         self.advance()
@@ -354,9 +365,12 @@ class Parser:
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
     # term   : factor ((MUL|DIV|MOD) factor)*
-    # factor : NUM | BOOL | STR | IDENTIFIER | input | (ADD|SUB) factor | "(" comp-expr ")" | if-stat
+    # factor : NUM | BOOL | STR | IDENTIFIER | input | (ADD|SUB) factor | "(" comp-expr ")" | if-stat | while-stat
     # input : "<" give ">"
-    # if-stat : "if" comp-expr ":" ("\n" instructions) "end"
+    # if-stat : "if" comp-expr ":" "\n" instructions if-stat-a* if-stat-b? "end"
+    # if-stat-a : "elif" comp-expr ":" "\n" instructions
+    # if-stat-b : "else" ":" "\n" instructions
+    # while-stat : "while" comp-expr ":" "\n" instructions "end"
 
     def __init__(self, tokens):
         self.tokens = tokens
@@ -414,13 +428,18 @@ class Parser:
             return result.success(AccessNode(t))
         
         elif t.equals(TokenType.KEYWORD, "if"):
-            self.advance()
             if_statement = result.register(self.if_statement())
             if result.error:
                 return result
             return result.success(if_statement)
         
-        elif t.equals(TokenType.KEYWORD, "end"):
+        elif t.equals(TokenType.KEYWORD, "while"):
+            while_statement = result.register(self.while_statement())
+            if result.error:
+                return result
+            return result.success(while_statement)
+        
+        elif t.equals(TokenType.KEYWORD, "end") or t.equals(TokenType.KEYWORD, "elif") or t.equals(TokenType.KEYWORD, "else"):
             return result.success(Node(Token(TokenType.KEYWORD, pos=t.pos)))
 
         return result.failure(InvalidSyntaxError("Expected a number or identifier", t.pos))
@@ -465,7 +484,17 @@ class Parser:
         return result.failure(InvalidSyntaxError('Expected "("', self.tokens[self.pos].pos))
 
     def assignment(self):
-        pass
+        result = ParseResult()
+        var_name_token = self.tokens[self.pos]
+        self.advance()
+        
+        if self.tokens[self.pos].type == TokenType.EQ:
+            self.advance()
+            comp_expr = result.register(self.comp_expr())
+            if result.error:
+                return result
+            return result.success(AssignmentNode(var_name_token, comp_expr))
+        return result.failure(InvalidSyntaxError('Expected "="', self.tokens[self.pos].pos))
 
     def declaration(self):
         result = ParseResult()
@@ -486,6 +515,8 @@ class Parser:
     
     def instr(self):
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "cal"):
+            return self.declaration()
+        elif self.tokens[self.pos].type == TokenType.IDENTIFIER:
             return self.assignment()
         elif self.tokens[self.pos].equals(TokenType.KEYWORD, "say"):
             return self.say_instr()
@@ -512,6 +543,32 @@ class Parser:
     
     def if_statement(self):
         result = ParseResult()
+        cases = []
+        else_case = None
+
+        while self.tokens[self.pos].equals(TokenType.KEYWORD, "elif") or self.tokens[self.pos].equals(TokenType.KEYWORD, "if"):
+            self.advance()
+            if_stat = result.register(self.if_parse())
+            if result.error:
+                return result
+            cases.append(if_stat)
+        
+        if self.tokens[self.pos].equals(TokenType.KEYWORD, "else"):
+            self.advance()
+            if self.tokens[self.pos].type == TokenType.SEMICOL:
+                self.advance()
+                instructions = result.register(self.instructions())
+                if result.error:
+                    return result
+                else_case = instructions
+
+        if self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
+            self.advance()
+            return result.success(IfNode(cases, else_case))
+        return result.failure(InvalidSyntaxError("Expected \"end\"", self.tokens[self.pos].pos))
+    
+    def if_parse(self):
+        result = ParseResult()
 
         comp_expr = result.register(self.comp_expr())
         if result.error:
@@ -526,15 +583,32 @@ class Parser:
             instructions = result.register(self.instructions())
             if result.error:
                 return result
-            
-            if self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
-                self.advance()
-                return result.success(IfNode((comp_expr, instructions)))
-            
-            return result.failure(InvalidSyntaxError("Expected \"end\"", self.tokens[self.pos].pos))
-        
+            return result.success((comp_expr, instructions))
         return result.failure(InvalidSyntaxError("Expected new line", self.tokens[self.pos].pos))
-    
+
+    def while_statement(self):
+        result = ParseResult()
+
+        self.advance()
+        comp_expr = result.register(self.comp_expr())
+        if result.error:
+            return result
+        
+        if self.tokens[self.pos].type != TokenType.SEMICOL:
+            return result.failure(InvalidSyntaxError('Expected ":"', self.tokens[self.pos].pos))
+        self.advance()
+        if self.tokens[self.pos].type != TokenType.ENDL:
+            return result.failure(InvalidSyntaxError('Expected new line', self.tokens[self.pos].pos))
+        self.advance()
+
+        instructions = result.register(self.instructions())
+        if result.error:
+            return result
+        if self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
+            self.advance()
+            return result.success(WhileNode(comp_expr, instructions))
+        return result.failure(InvalidSyntaxError('Expected "end"', self.tokens[self.pos].pos))
+
     def input_expr(self):
         result = ParseResult()
         self.advance()
@@ -633,16 +707,19 @@ class Interpreter:
             return result.success(value)
         elif isinstance(node, DeclarationNode):
             name = node.name_token.value
-            if context.symbol_table.get_var(name):
+            if context.symbol_table.get_var(name) != None:
                 result.failure(RuntimeError(f'Variable "{name}" is already defined', node.name_token.pos))
-            value = result.register(self.evaluate(node.value_node, context))
-            if result.error:
-                return result
+            if node.value_node != None:
+                value = result.register(self.evaluate(node.value_node, context))
+                if result.error:
+                    return result
+            else:
+                value = NULL
             context.symbol_table.set_var(name, value)
             return result.success(value)
         elif isinstance(node, AssignmentNode):
             name = node.name_token.value
-            if not context.symbol_table.get_var(name):
+            if context.symbol_table.get_var(name) == None:
                 result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
             value = result.register(self.evaluate(node.value_node, context))
             if result.error:
@@ -656,16 +733,33 @@ class Interpreter:
                 return result.success(value)
             return result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
         elif isinstance(node, IfNode):
-            condition, instructions = node.main_case
-            condition = result.register(self.evaluate(condition, context))
-            if result.error:
-                return result
-            if condition:
-                instructions = result.register(self.evaluate(instructions, context))
+            for condition, instructions in node.cases:
+                condition = result.register(self.evaluate(condition, context))
+                if result.error:
+                    return result
+                if condition:
+                    instructions = result.register(self.evaluate(instructions, context))
+                    if result.error:
+                        return result
+                    return result.success(instructions)
+            if node.else_case:
+                instructions = result.register(self.evaluate(node.else_case, context))
                 if result.error:
                     return result
                 return result.success(instructions)
             return result.success(None)
+        elif isinstance(node, WhileNode):
+            condition = result.register(self.evaluate(node.condition, context))
+            if result.error:
+                return result
+            while condition:
+                instructions = result.register(self.evaluate(node.instructions, context))
+                if result.error:
+                    return result
+                condition = result.register(self.evaluate(node.condition, context))
+                if result.error:
+                    return result
+            return result.success(1)
         elif isinstance(node, SayNode):
             value = result.register(self.evaluate(node.node, context))
             if result.error:

@@ -20,5 +20,4 @@ while True:
             if (result.error):
                 print(result.error)
             else:
-                for res in result.value:
-                    print(res)
+                print()

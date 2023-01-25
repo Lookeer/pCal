@@ -1,11 +1,11 @@
+cal a
 say("a = ")
-cal a = <give> + 2
+a = <give>
 say("b = ")
 cal b = <give>
 
-if (a > b):
+if (a > b) + (b == 5) >= 2:
     say(a-b)
-end
-if (a < b):
+else:
     say(b-a)
 end

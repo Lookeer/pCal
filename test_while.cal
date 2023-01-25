@@ -1,0 +1,7 @@
+cal a = 5
+
+while a > 0:
+    say(a)
+    say("\n")
+    a = a - 1
+end

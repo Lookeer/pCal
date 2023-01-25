@@ -9,7 +9,7 @@ cal a = 2
 cal str = "ce faci"
 cal alt_str = "frate"
 
-say(str + ", " + alt_str + "?")
+say(str + ", " + alt_str + "?\n\n\n")
 
 say(10 + 5 * a * (a + 5))
 
