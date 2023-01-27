@@ -358,15 +358,16 @@ class Lexer:
 
 class Parser:
     # instructions : "\n"* instr ("\n"+ instr)* "\n"*
-    # instr : declaration | assignment | comp-expr | say-instr
+    # instr : declaration | assignment | comp-expr | say-instr | if-stat | while-stat
     # declaration : "cal" IDENTIFIER ("=" comp-expr)?
     # assignment : IDENTIFIER "=" comp-expr
     # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
     # term   : factor ((MUL|DIV|MOD) factor)*
-    # factor : NUM | BOOL | STR | IDENTIFIER | input | (ADD|SUB) factor | "(" comp-expr ")" | if-stat | while-stat
+    # factor : NUM | BOOL | STR | IDENTIFIER | input | (ADD|SUB) factor | "(" comp-expr ")"
     # input : "<" give ">"
+    # var-decl : IDENTIFIER | IDENTIFIER "["  "]"
     # if-stat : "if" comp-expr ":" "\n" instructions if-stat-a* if-stat-b? "end"
     # if-stat-a : "elif" comp-expr ":" "\n" instructions
     # if-stat-b : "else" ":" "\n" instructions
@@ -426,18 +427,6 @@ class Parser:
         elif t.type == TokenType.IDENTIFIER:
             self.advance()
             return result.success(AccessNode(t))
-        
-        elif t.equals(TokenType.KEYWORD, "if"):
-            if_statement = result.register(self.if_statement())
-            if result.error:
-                return result
-            return result.success(if_statement)
-        
-        elif t.equals(TokenType.KEYWORD, "while"):
-            while_statement = result.register(self.while_statement())
-            if result.error:
-                return result
-            return result.success(while_statement)
         
         elif t.equals(TokenType.KEYWORD, "end") or t.equals(TokenType.KEYWORD, "elif") or t.equals(TokenType.KEYWORD, "else"):
             return result.success(Node(Token(TokenType.KEYWORD, pos=t.pos)))
@@ -514,12 +503,23 @@ class Parser:
         return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
     
     def instr(self):
+        result = ParseResult()
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "cal"):
             return self.declaration()
         elif self.tokens[self.pos].type == TokenType.IDENTIFIER:
             return self.assignment()
         elif self.tokens[self.pos].equals(TokenType.KEYWORD, "say"):
             return self.say_instr()
+        elif self.tokens[self.pos].equals(TokenType.KEYWORD, "if"):
+            if_statement = result.register(self.if_statement())
+            if result.error:
+                return result
+            return result.success(if_statement)
+        elif self.tokens[self.pos].equals(TokenType.KEYWORD, "while"):
+            while_statement = result.register(self.while_statement())
+            if result.error:
+                return result
+            return result.success(while_statement)
         return self.comp_expr()
     
     def instructions(self):

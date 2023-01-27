@@ -1,7 +1,6 @@
-cal a = 5
+cal i = 10
 
-while a > 0:
-    say(a)
-    say("\n")
-    a = a - 1
+while i > 0:
+    say(i)
+    i = i - 1
 end

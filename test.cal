@@ -1,7 +1,7 @@
 cal testing = 5
 
 if testing >= 5:
-    say("foarte bine vere")
+    say("foarte bine vere\n")
 end
 
 cal a = 2
