@@ -158,7 +158,8 @@ class BinaryOperationNode(Node):
         return f'({self.left}, {self.token}, {self.right})'
 
 class AccessNode(Node):
-    def __init__(self, name_token):
+    def __init__(self, name_token, depth_elements = None):
+        self.depth_elements = depth_elements
         self.name_token = name_token
 
 class DeclarationNode(Node):
@@ -449,7 +450,6 @@ class Parser:
             return result.success(array_expr)
         
         elif t.type == TokenType.IDENTIFIER:
-            self.advance()
             array_identifier = result.register(self.array_identifier())
             if result.error:
                 return result
@@ -639,15 +639,24 @@ class Parser:
     def array_identifier(self):
         result = ParseResult()
 
+        var_name = self.tokens[self.pos]
+        depth_elements = []
+
+        self.advance()
+
         while self.tokens[self.pos].type == TokenType.LSQUARE:
             self.advance()
             comp_expr = result.register(self.comp_expr())
             if result.error:
                 return result
             
+            depth_elements.append(comp_expr)
+            
             if self.tokens[self.pos].type != TokenType.RSQUARE:
                 return result.failure(InvalidSyntaxError('Expected "]"', self.tokens[self.pos].pos))
             self.advance()
+        
+        return result.success(AccessNode(var_name, depth_elements))
             
 
     def array_expr(self):
@@ -801,9 +810,15 @@ class Interpreter:
         elif isinstance(node, AccessNode):
             name = node.name_token.value
             value = context.symbol_table.get_var(name)
-            if value != None:
-                return result.success(value)
-            return result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
+            if value == None:
+                return result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
+            if node.depth_elements != None:
+                for element in node.depth_elements:
+                    element_value = result.register(self.evaluate(element, context))
+                    if result.error:
+                        return result
+                    value = value[element_value]
+            return result.success(value)
         elif isinstance(node, IfNode):
             for condition, instructions in node.cases:
                 condition = result.register(self.evaluate(condition, context))
