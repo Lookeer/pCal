@@ -26,10 +26,11 @@ class TokenType(Enum):
     RSQUARE = 21
     COMMA = 22
     SEMICOL = 23
-    ENDL = 24
-    EOF = 25
+    COLON = 24
+    ENDL = 25
+    EOF = 26
 
-KEYWORDS = ['cal', 'if', 'elif', 'else', 'while', 'True', 'False', 'end', 'say', 'give']
+KEYWORDS = ['cal', 'if', 'elif', 'else', 'while', 'for', 'True', 'False', 'end', 'say', 'give', 'funcal', 'return']
 
 class Position:
     def __init__(self, index, line, file_name, line_text):
@@ -88,6 +89,7 @@ class RuntimeResult:
     def __init__(self):
         self.error = None
         self.value = None
+        self.return_value = None
     
     def register(self, result):
         if result.error:
@@ -96,6 +98,10 @@ class RuntimeResult:
     
     def success(self, value):
         self.value = value
+        return self
+    
+    def success_return(self, return_value):
+        self.return_value = return_value
         return self
 
     def failure(self, error):
@@ -175,7 +181,6 @@ class AssignmentNode(Node):
     def __repr__(self):
         return f'({self.name_token} = {self.value_node})'
 
-
 class InstructionsNode(Node):
     def __init__(self, instruction_nodes):
         self.instruction_nodes = instruction_nodes
@@ -190,6 +195,13 @@ class WhileNode(Node):
         self.condition = condition
         self.instructions = instructions
 
+class ForNode(Node):
+    def __init__(self, init_expr, condition, update_expr, instructions):
+        self.init_expr = init_expr
+        self.condition = condition
+        self.update_expr = update_expr
+        self.instructions = instructions
+
 class SayNode(Node):
     def __init__(self, node):
         self.node = node
@@ -197,6 +209,18 @@ class SayNode(Node):
 class InputNode(Node):
     def __init__(self):
         pass
+
+class FuncDefNode(Node):
+    def __init__(self, name_token, arg_tokens, instructions):
+        self.name_token = name_token
+        self.arg_tokens = arg_tokens
+        self.instructions = instructions
+
+class FuncCallNode(Node):
+    def __init__(self, node_to_call, arguments, pos):
+        self.node_to_call = node_to_call
+        self.arguments = arguments
+        self.pos = pos
 
 class Context:
     def __init__(self, name):
@@ -223,10 +247,59 @@ class SymbolTable:
     def delete_var(self, name):
         self.symbols.pop(name)
 
+class Function:
+    def __init__(self, name, arg_names, instructions, pos):
+        self.name = name
+        self.arg_names = arg_names
+        self.instructions = instructions
+        self.pos = pos
+
+    def create_context(self):
+        context = Context(self.name)
+        context.symbol_table = SymbolTable()
+        return context
+    
+    def check_args(self, args):
+        result = RuntimeResult()
+
+        if len(args) > len(self.arg_names):
+            return result.failure(RuntimeError(f'Too many arguments passed into "{self.name}" ({len(args)} passed, expected {len(self.arg_names)}"', self.pos))
+        
+        if len(args) < len(self.arg_names):
+            return result.failure(RuntimeError(f'Too few passed into "{self.name}" ({len(args)} passed, expected {len(self.arg_names)}"', self.pos))
+
+        return result.success(None)
+    
+    def assign_args(self, args, context):
+        for i in range(len(args)):
+            context.symbol_table.set(self.arg_names[i], args[i])
+    
+    def call(self, args):
+        result = RuntimeResult()
+        interpreter = Interpreter()
+        context = self.create_context()
+
+        result.register(self.check_args(args))
+        if result.error:
+            return result
+        self.assign_args(args, context)
+
+        value = result.register(interpreter.evaluate(self.instructions, context))
+        if result.error:
+            return result
+        
+        if result.return_value:
+            return result.success(result.return_value)
+        
+        return result.success(value)
+
 class Lexer:
     def __init__(self, expression : str, file_name : str):
         self.expression = expression
-        self.pos = Position(-1, 1, file_name, expression.splitlines()[0])
+        if expression == "":
+            self.pos = Position(-1, 1, file_name, "")
+        else:
+            self.pos = Position(-1, 1, file_name, expression.splitlines()[0])
         self.file_name = file_name
         self.current_char = ""
         self.advance()
@@ -271,6 +344,9 @@ class Lexer:
             elif self.current_char == '!':
                 return self.get_comparison(TokenType.NOT)
             elif self.current_char == ':':
+                self.advance()
+                return Token(TokenType.COLON, pos=self.pos)
+            elif self.current_char == ';':
                 self.advance()
                 return Token(TokenType.SEMICOL, pos=self.pos)
             elif self.current_char == ',':
@@ -375,21 +451,25 @@ class Lexer:
 
 class Parser:
     # instructions : "\n"* instr ("\n"+ instr)* "\n"*
-    # instr : declaration | assignment | comp-expr | say-instr | if-stat | while-stat
+    # instr : var-decl | comp-expr | say-instr | func-def | if-stat | while-stat | for-stat
+    # var-decl : declaration | assignment
     # declaration : "cal" IDENTIFIER ("=" comp-expr)?
-    # assignment : IDENTIFIER "=" comp-expr
+    # assignment : IDENTIFIER "=" comp-expr | term
     # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
-    # term   : factor ((MUL|DIV|MOD) factor)*
-    # factor : NUM | BOOL | STR | IDENTIFIER | array-expr | input | (ADD|SUB) factor | "(" comp-expr ")"
-    # vector-identifier : IDENTIFIER ("[" comp-expr "]")*
+    # term : func-call ((MUL|DIV|MOD) func-call)*
+    # func-call : factor ("(" (comp-expr ("," comp-expr)*)? ")")?
+    # factor : NUM | BOOL | STR | array-identifier | array-expr | input | (ADD|SUB) factor | "(" comp-expr ")"
+    # array-identifier : IDENTIFIER ("[" comp-expr "]")*
     # array-expr : "[" (comp-expr ("," comp-expr)*)? "]"
     # input : "<" give ">"
     # if-stat : "if" comp-expr ":" "\n" instructions if-stat-a* if-stat-b? "end"
     # if-stat-a : "elif" comp-expr ":" "\n" instructions
     # if-stat-b : "else" ":" "\n" instructions
     # while-stat : "while" comp-expr ":" "\n" instructions "end"
+    # for-stat : "for" assignment "," comp-expr "," assignment ":" "\n" instructions "end"
+    # func-def : "funcal" IDENTIFIER "(" (IDENTIFIER ("," IDENTIFIER)*)? ")" ":" "\n" instructions "end"
 
     def __init__(self, tokens):
         self.tokens = tokens
@@ -460,8 +540,44 @@ class Parser:
 
         return result.failure(InvalidSyntaxError("Expected a number or identifier", t.pos))
     
+    def func_call(self, factor = None):
+        result = ParseResult()
+        start_pos = self.tokens[self.pos].pos
+        if factor == None:
+            factor = result.register(self.factor())
+            if result.error:
+                return result
+        
+        if self.tokens[self.pos].type == TokenType.LPAREN:
+            self.advance()
+            args = []
+
+            if self.tokens[self.pos].type == TokenType.RPAREN:
+                self.advance()
+            else:
+                arg = result.register(self.comp_expr())
+                if result.error:
+                    return result
+
+                args.append(arg)
+
+                while self.tokens[self.pos].type == TokenType.COMMA:
+                    self.advance()
+                    arg = result.register(self.comp_expr())
+                    if result.error:
+                        return result
+
+                    args.append(arg)
+                
+                if self.tokens[self.pos].type != TokenType.RPAREN:
+                    return result.failure(InvalidSyntaxError('Expected ")"', self.tokens[self.pos].pos))
+            
+            return result.success(FuncCallNode(factor, args, start_pos))
+        return result.success(factor)
+
+
     def term(self):
-        return self.do_operation(self.factor, (TokenType.MUL, TokenType.DIV, TokenType.MOD))
+        return self.do_operation(self.func_call, (TokenType.MUL, TokenType.DIV, TokenType.MOD))
     
     def math_expr(self):
         return self.do_operation(self.term, (TokenType.ADD, TokenType.SUB))
@@ -482,6 +598,58 @@ class Parser:
         
         return result.success(node)
     
+    def func_def(self):
+        result = ParseResult()
+        self.advance()
+        arg_tokens = []
+
+        if self.tokens[self.pos].type != TokenType.IDENTIFIER:
+            return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
+        func_name_token = self.tokens[self.pos]
+        self.advance()
+        
+        if self.tokens[self.pos].type != TokenType.LPAREN:
+            return result.failure(InvalidSyntaxError('Expected "("', self.tokens[self.pos].pos))
+        self.advance()
+        
+        if self.tokens[self.pos].type == TokenType.RPAREN:
+            self.advance()
+        else:
+            if self.tokens[self.pos].type != TokenType.IDENTIFIER:
+                return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
+            arg_tokens.append(self.tokens[self.pos])
+            self.advance()
+
+            while self.tokens[self.pos].type == TokenType.COMMA:
+                self.advance()
+
+                if self.tokens[self.pos].type != TokenType.IDENTIFIER:
+                    return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
+                arg_tokens.append(self.tokens[self.pos])
+                self.advance()
+            
+            if self.tokens[self.pos].type != TokenType.RPAREN:
+                return result.failure(InvalidSyntaxError('Expected "("', self.tokens[self.pos].pos))
+            self.advance()
+        
+        if self.tokens[self.pos].type != TokenType.COLON:
+            return result.failure(InvalidSyntaxError('Expected ":"', self.tokens[self.pos].pos))
+        self.advance()
+        
+        if self.tokens[self.pos].type != TokenType.ENDL:
+            return result.failure(InvalidSyntaxError('Expected new line', self.tokens[self.pos].pos))
+        self.advance()
+
+        instructions = result.register(self.instructions())
+        if result.error:
+            return result
+        
+        if not self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
+            return result.failure(InvalidSyntaxError('Expected "end"', self.tokens[self.pos].pos))
+        self.advance()
+        
+        return result.success(FuncDefNode(func_name_token, arg_tokens, instructions))
+
     def say_instr(self):
         result = ParseResult()
         self.advance()
@@ -510,6 +678,11 @@ class Parser:
             if result.error:
                 return result
             return result.success(AssignmentNode(var_name_token, comp_expr))
+        elif self.tokens[self.pos].type == TokenType.LPAREN:
+            func_call = result.register(self.func_call(AccessNode(var_name_token)))
+            if result.error:
+                return result
+            return result.success(func_call)
         return result.failure(InvalidSyntaxError('Expected "="', self.tokens[self.pos].pos))
 
     def declaration(self):
@@ -529,14 +702,32 @@ class Parser:
                 return result.success(DeclarationNode(var_name_token))
         return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
     
-    def instr(self):
+    def var_decl(self):
         result = ParseResult()
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "cal"):
-            return self.declaration()
-        elif self.tokens[self.pos].type == TokenType.IDENTIFIER:
-            return self.assignment()
+            declaration = result.register(self.declaration())
+            if result.error:
+                return result
+            return result.success(declaration)
+        if self.tokens[self.pos].type == TokenType.IDENTIFIER:
+            assignment = result.register(self.assignment())
+            if result.error:
+                return result
+            return result.success(assignment)
+        return result.failure(InvalidSyntaxError('Expected "cal" or identifier', self.tokens[self.pos].pos))
+
+    def instr(self):
+        result = ParseResult()
+        if self.tokens[self.pos].equals(TokenType.KEYWORD, "cal") or self.tokens[self.pos].type == TokenType.IDENTIFIER:
+            var_decl = result.register(self.var_decl())
+            if result.error:
+                return result
+            return result.success(var_decl)
         elif self.tokens[self.pos].equals(TokenType.KEYWORD, "say"):
-            return self.say_instr()
+            say_instr = result.register(self.say_instr())
+            if result.error:
+                return result
+            return result.success(say_instr)
         elif self.tokens[self.pos].equals(TokenType.KEYWORD, "if"):
             if_statement = result.register(self.if_statement())
             if result.error:
@@ -547,7 +738,21 @@ class Parser:
             if result.error:
                 return result
             return result.success(while_statement)
-        return self.comp_expr()
+        elif self.tokens[self.pos].equals(TokenType.KEYWORD, "for"):
+            for_statement = result.register(self.for_statement())
+            if result.error:
+                return result
+            return result.success(for_statement)
+        elif self.tokens[self.pos].equals(TokenType.KEYWORD, "funcal"):
+            func_def = result.register(self.func_def())
+            if result.error:
+                return result
+            return result.success(func_def)
+
+        comp_expr = result.register(self.comp_expr())
+        if result.error:
+            return result
+        return result.success(comp_expr)
     
     def instructions(self):
         result = ParseResult()
@@ -582,7 +787,7 @@ class Parser:
         
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "else"):
             self.advance()
-            if self.tokens[self.pos].type == TokenType.SEMICOL:
+            if self.tokens[self.pos].type == TokenType.COLON:
                 self.advance()
                 instructions = result.register(self.instructions())
                 if result.error:
@@ -601,7 +806,7 @@ class Parser:
         if result.error:
             return result
         
-        if self.tokens[self.pos].type != TokenType.SEMICOL:
+        if self.tokens[self.pos].type != TokenType.COLON:
             return result.failure(InvalidSyntaxError("Expected ':'", self.tokens[self.pos].pos))
         
         self.advance()
@@ -621,7 +826,7 @@ class Parser:
         if result.error:
             return result
         
-        if self.tokens[self.pos].type != TokenType.SEMICOL:
+        if self.tokens[self.pos].type != TokenType.COLON:
             return result.failure(InvalidSyntaxError('Expected ":"', self.tokens[self.pos].pos))
         self.advance()
         if self.tokens[self.pos].type != TokenType.ENDL:
@@ -635,6 +840,48 @@ class Parser:
             self.advance()
             return result.success(WhileNode(comp_expr, instructions))
         return result.failure(InvalidSyntaxError('Expected "end"', self.tokens[self.pos].pos))
+    
+    def for_statement(self):
+        result = ParseResult()
+
+        self.advance()
+        assignment = result.register(self.var_decl())
+        if result.error:
+            return result
+        
+        if self.tokens[self.pos].type != TokenType.COMMA:
+            return result.failure(InvalidSyntaxError('Expected ","', self.tokens[self.pos].pos))
+        self.advance()
+        
+        condition = result.register(self.comp_expr())
+        if result.error:
+            return result
+
+        if self.tokens[self.pos].type != TokenType.COMMA:
+            return result.failure(InvalidSyntaxError('Expected ","', self.tokens[self.pos].pos))
+        self.advance()
+
+        update = result.register(self.assignment())
+        if result.error:
+            return result
+        
+        if self.tokens[self.pos].type != TokenType.COLON:
+            return result.failure(InvalidSyntaxError('Expected ":"', self.tokens[self.pos].pos))
+        self.advance()
+
+        if self.tokens[self.pos].type != TokenType.ENDL:
+            return result.failure(InvalidSyntaxError('Expected new line', self.tokens[self.pos].pos))
+        self.advance()
+
+        instructions = result.register(self.instructions())
+        if result.error:
+            return result
+        
+        if not self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
+            return result.failure(InvalidSyntaxError('Expected "end"', self.tokens[self.pos].pos))
+        self.advance()
+        
+        return result.success(ForNode(assignment, condition, update, instructions))
     
     def array_identifier(self):
         result = ParseResult()
@@ -817,6 +1064,10 @@ class Interpreter:
                     element_value = result.register(self.evaluate(element, context))
                     if result.error:
                         return result
+                    if not isinstance(value, list):
+                        return result.failure(RuntimeError("Value is not of type array", node.name_token.pos))
+                    if element_value >= len(value) or element_value < -len(value):
+                        return result.failure(RuntimeError('Index is out of bounds', node.name_token.pos))
                     value = value[element_value]
             return result.success(value)
         elif isinstance(node, IfNode):
@@ -847,6 +1098,24 @@ class Interpreter:
                 if result.error:
                     return result
             return result.success(1)
+        elif isinstance(node, ForNode):
+            init_expr = result.register(self.evaluate(node.init_expr, context))
+            if result.error:
+                return result
+            condition = result.register(self.evaluate(node.condition, context))
+            if result.error:
+                return result
+            while condition:
+                instructions = result.register(self.evaluate(node.instructions, context))
+                if result.error:
+                    return result
+                update_expr = result.register(self.evaluate(node.update_expr, context))
+                if result.error:
+                    return result
+                condition = result.register(self.evaluate(node.condition, context))
+                if result.error:
+                    return result
+            return result.success(1)
         elif isinstance(node, SayNode):
             value = result.register(self.evaluate(node.node, context))
             if result.error:
@@ -857,6 +1126,37 @@ class Interpreter:
             value = input()
             value = self.validate_input(value)
             return result.success(value)
+        elif isinstance(node, FuncDefNode):
+            func_name = node.name_token.value
+            if context.symbol_table.get_var(func_name) != None:
+                return result.failure(RuntimeError(f'Function "{func_name}" is already defined', node.name_token.pos))
+            
+            arg_names = []
+            for arg in node.arg_tokens:
+                arg_names.append(arg.value)
+            instructions = node.instructions
+            func = Function(func_name, arg_names, instructions, node.name_token.pos)
+            
+            context.symbol_table.set_var(func_name, func)
+            return result.success(func)
+        elif isinstance(node, FuncCallNode):
+            args = []
+
+            func = result.register(self.evaluate(node.node_to_call, context))
+            if result.error:
+                return result
+            
+            for arg in node.arguments:
+                arg = result.register(self.evaluate(arg, context))
+                args.append(arg)
+            
+            try:
+                value = result.register(func.call(args))
+            except:
+                return result.failure(RuntimeError('Invalid function', node.pos))
+            
+            return result.success(NULL)
+
         elif isinstance(node, Node):
             return result.success(None)
     
