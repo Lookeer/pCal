@@ -1,0 +1,6 @@
+cal i = 10
+
+while i > 0:
+    say(i)
+    i = i - 1
+end

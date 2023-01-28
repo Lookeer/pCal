@@ -1,0 +1,11 @@
+cal a
+say("a = ")
+a = <give>
+say("b = ")
+cal b = <give>
+
+if (a > b) + (b == 5) >= 2:
+    say(a-b)
+else:
+    say(b-a)
+end

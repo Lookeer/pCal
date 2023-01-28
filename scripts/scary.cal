@@ -1,0 +1,14 @@
+say("schery_ryaid = ")
+cal scheri_raid = <give>
+
+while scheri_raid != 1:
+    scheri_raid = scheri_raid - 1
+    say(scheri_raid)
+    say(" este boss\n")
+end
+
+say("gata frate esti boss acum\n")
+
+cal ecurito = "de ce esti slab"
+
+say(ecurito + " , ecurito?")
