@@ -22,9 +22,12 @@ class TokenType(Enum):
     ISEQ = 17
     LPAREN = 18
     RPAREN = 19
-    SEMICOL = 20
-    ENDL = 21
-    EOF = 22
+    LSQUARE = 20
+    RSQUARE = 21
+    COMMA = 22
+    SEMICOL = 23
+    ENDL = 24
+    EOF = 25
 
 KEYWORDS = ['cal', 'if', 'elif', 'else', 'while', 'True', 'False', 'end', 'say', 'give']
 
@@ -132,6 +135,10 @@ class BoolNode(Node):
 
 class StringNode(Node):
     pass
+
+class ArrayNode(Node):
+    def __init__(self, elements):
+        self.elements = elements
 
 class UnaryOperationNode(Node):
     def __init__(self, token, node):
@@ -248,6 +255,12 @@ class Lexer:
             elif self.current_char == ')':
                 self.advance()
                 return Token(TokenType.RPAREN, pos=self.pos)
+            elif self.current_char == '[':
+                self.advance()
+                return Token(TokenType.LSQUARE, pos=self.pos)
+            elif self.current_char == ']':
+                self.advance()
+                return Token(TokenType.RSQUARE, pos=self.pos)
             elif self.current_char == '"':
                 return self.get_string()
             elif self.current_char == '<':
@@ -259,6 +272,9 @@ class Lexer:
             elif self.current_char == ':':
                 self.advance()
                 return Token(TokenType.SEMICOL, pos=self.pos)
+            elif self.current_char == ',':
+                self.advance()
+                return Token(TokenType.COMMA, pos=self.pos)
             elif self.current_char == '\n':
                 self.advance()
                 return Token(TokenType.ENDL, pos=self.pos)
@@ -365,9 +381,10 @@ class Parser:
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
     # term   : factor ((MUL|DIV|MOD) factor)*
-    # factor : NUM | BOOL | STR | IDENTIFIER | input | (ADD|SUB) factor | "(" comp-expr ")"
+    # factor : NUM | BOOL | STR | IDENTIFIER | array-expr | input | (ADD|SUB) factor | "(" comp-expr ")"
+    # vector-identifier : IDENTIFIER ("[" comp-expr "]")*
+    # array-expr : "[" (comp-expr ("," comp-expr)*)? "]"
     # input : "<" give ">"
-    # var-decl : IDENTIFIER | IDENTIFIER "["  "]"
     # if-stat : "if" comp-expr ":" "\n" instructions if-stat-a* if-stat-b? "end"
     # if-stat-a : "elif" comp-expr ":" "\n" instructions
     # if-stat-b : "else" ":" "\n" instructions
@@ -424,9 +441,19 @@ class Parser:
                 return result.success(comp_expr)
             return result.failure(InvalidSyntaxError("Expected ')'", t.pos))
         
+        elif t.type == TokenType.LSQUARE:
+            self.advance()
+            array_expr = result.register(self.array_expr())
+            if result.error:
+                return result
+            return result.success(array_expr)
+        
         elif t.type == TokenType.IDENTIFIER:
             self.advance()
-            return result.success(AccessNode(t))
+            array_identifier = result.register(self.array_identifier())
+            if result.error:
+                return result
+            return result.success(array_identifier)
         
         elif t.equals(TokenType.KEYWORD, "end") or t.equals(TokenType.KEYWORD, "elif") or t.equals(TokenType.KEYWORD, "else"):
             return result.success(Node(Token(TokenType.KEYWORD, pos=t.pos)))
@@ -608,6 +635,42 @@ class Parser:
             self.advance()
             return result.success(WhileNode(comp_expr, instructions))
         return result.failure(InvalidSyntaxError('Expected "end"', self.tokens[self.pos].pos))
+    
+    def array_identifier(self):
+        result = ParseResult()
+
+        while self.tokens[self.pos].type == TokenType.LSQUARE:
+            self.advance()
+            comp_expr = result.register(self.comp_expr())
+            if result.error:
+                return result
+            
+            if self.tokens[self.pos].type != TokenType.RSQUARE:
+                return result.failure(InvalidSyntaxError('Expected "]"', self.tokens[self.pos].pos))
+            self.advance()
+            
+
+    def array_expr(self):
+        result = ParseResult()
+        start_pos = self.tokens[self.pos].pos
+        elements = []
+        while True:
+            comp_expr = result.register(self.comp_expr())
+            if result.error:
+                return result
+            
+            elements.append(comp_expr)
+            
+            if self.tokens[self.pos].type != TokenType.COMMA:
+                break
+
+            self.advance()
+        if self.tokens[self.pos].type != TokenType.RSQUARE:
+            result.failure(InvalidSyntaxError('Expected "]"', start_pos))
+        
+        self.advance()
+        
+        return result.success(ArrayNode(elements))
 
     def input_expr(self):
         result = ParseResult()
@@ -648,10 +711,10 @@ class Interpreter:
             instructions = []
             for instruction_node in node.instruction_nodes:
                 value = result.register(self.evaluate(instruction_node, context))
-                if value != None:
-                    instructions.append(value)
                 if result.error:
                     return result
+                if value != None:
+                    instructions.append(value)
             return result.success(instructions)
         elif isinstance(node, NumberNode):
             return result.success(self.int_or_float(node))
@@ -659,6 +722,15 @@ class Interpreter:
             return result.success(True if node.token.value == "True" else False)
         elif isinstance(node, StringNode):
             return result.success(node.token.value)
+        elif isinstance(node, ArrayNode):
+            elements = []
+            for element in node.elements:
+                value = result.register(self.evaluate(element, context))
+                if result.error:
+                    return result
+                if value != None:
+                    elements.append(value)
+            return result.success(elements)
         elif isinstance(node, BinaryOperationNode):
             left = result.register(self.evaluate(node.left, context))
             if result.error:
