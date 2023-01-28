@@ -87,26 +87,44 @@ class ParseResult:
 
 class RuntimeResult:
     def __init__(self):
-        self.error = None
-        self.value = None
-        self.return_value = None
+        self.reset()
     
     def register(self, result):
-        if result.error:
+        if result.error != None:
             self.error = result.error
+        if result.return_value != None:
+            self.return_value = result.return_value
         return result.value
     
     def success(self, value):
+        self.reset()
+        self.value = value
+        return self
+    
+    def success_no_reset(self, value):
         self.value = value
         return self
     
     def success_return(self, return_value):
+        self.reset()
         self.return_value = return_value
         return self
 
     def failure(self, error):
+        self.reset()
         self.error = error
         return self
+    
+    def check_return(self):
+        if self.error != None:
+            return True
+        if self.return_value != None:
+            return True
+    
+    def reset(self):
+        self.value = None
+        self.error = None
+        self.return_value = None
 
 class Error:
     def __init__(self, name, info, pos : Position):
@@ -222,9 +240,14 @@ class FuncCallNode(Node):
         self.arguments = arguments
         self.pos = pos
 
+class ReturnNode(Node):
+    def __init__(self, value_node):
+        self.value_node = value_node
+
 class Context:
-    def __init__(self, name):
+    def __init__(self, name, parent = None):
         self.name = name
+        self.parent = parent
         self.symbol_table = SymbolTable()
 
 class NullSymbol:
@@ -234,11 +257,14 @@ class NullSymbol:
 NULL = NullSymbol()
 
 class SymbolTable:
-    def __init__(self):
+    def __init__(self, parent = None):
         self.symbols = {}
+        self.parent = parent
     
     def get_var(self, name):
         value = self.symbols.get(name, None)
+        if value == None and self.parent:
+            return self.parent.get_var(name)
         return value
     
     def set_var(self, name, value):
@@ -248,31 +274,32 @@ class SymbolTable:
         self.symbols.pop(name)
 
 class Function:
-    def __init__(self, name, arg_names, instructions, pos):
+    def __init__(self, name, arg_names, instructions, pos, parent_context):
         self.name = name
         self.arg_names = arg_names
         self.instructions = instructions
         self.pos = pos
+        self.parent_context = parent_context
 
     def create_context(self):
-        context = Context(self.name)
-        context.symbol_table = SymbolTable()
+        context = Context(self.name, self.parent_context)
+        context.symbol_table = SymbolTable(context.parent.symbol_table)
         return context
     
     def check_args(self, args):
         result = RuntimeResult()
 
         if len(args) > len(self.arg_names):
-            return result.failure(RuntimeError(f'Too many arguments passed into "{self.name}" ({len(args)} passed, expected {len(self.arg_names)}"', self.pos))
+            return result.failure(RuntimeError(f'Too many arguments passed into "{self.name}" ({len(args)} passed, expected {len(self.arg_names)})"', self.pos))
         
         if len(args) < len(self.arg_names):
-            return result.failure(RuntimeError(f'Too few passed into "{self.name}" ({len(args)} passed, expected {len(self.arg_names)}"', self.pos))
+            return result.failure(RuntimeError(f'Too few passed into "{self.name}" ({len(args)} passed, expected {len(self.arg_names)})"', self.pos))
 
         return result.success(None)
     
     def assign_args(self, args, context):
         for i in range(len(args)):
-            context.symbol_table.set(self.arg_names[i], args[i])
+            context.symbol_table.set_var(self.arg_names[i], args[i])
     
     def call(self, args):
         result = RuntimeResult()
@@ -287,10 +314,8 @@ class Function:
         value = result.register(interpreter.evaluate(self.instructions, context))
         if result.error:
             return result
-        
-        if result.return_value:
-            return result.success(result.return_value)
-        
+        if result.return_value != None:
+            value = result.return_value
         return result.success(value)
 
 class Lexer:
@@ -451,9 +476,10 @@ class Lexer:
 
 class Parser:
     # instructions : "\n"* instr ("\n"+ instr)* "\n"*
-    # instr : var-decl | comp-expr | say-instr | func-def | if-stat | while-stat | for-stat
+    # instr : var-decl | comp-expr | say-instr | func-def | if-stat | while-stat | for-stat | return-expr
+    # return-expr : "return" comp_expr
     # var-decl : declaration | assignment
-    # declaration : "cal" IDENTIFIER ("=" comp-expr)?
+    # declaration : "cal" IDENTIFIER ("=" comp-expr)? ("," IDENTIFIER ("=" comp-expr)?)*
     # assignment : IDENTIFIER "=" comp-expr | term
     # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
@@ -558,7 +584,6 @@ class Parser:
                 arg = result.register(self.comp_expr())
                 if result.error:
                     return result
-
                 args.append(arg)
 
                 while self.tokens[self.pos].type == TokenType.COMMA:
@@ -566,12 +591,10 @@ class Parser:
                     arg = result.register(self.comp_expr())
                     if result.error:
                         return result
-
                     args.append(arg)
-                
                 if self.tokens[self.pos].type != TokenType.RPAREN:
                     return result.failure(InvalidSyntaxError('Expected ")"', self.tokens[self.pos].pos))
-            
+            self.advance()
             return result.success(FuncCallNode(factor, args, start_pos))
         return result.success(factor)
 
@@ -687,20 +710,26 @@ class Parser:
 
     def declaration(self):
         result = ParseResult()
-        self.advance()
-
-        if self.tokens[self.pos].type == TokenType.IDENTIFIER:
-            var_name_token = self.tokens[self.pos]
+        declarations = []
+        while True:
             self.advance()
-            if self.tokens[self.pos].type == TokenType.EQ:
+            if self.tokens[self.pos].type == TokenType.IDENTIFIER:
+                var_name_token = self.tokens[self.pos]
                 self.advance()
-                comp_expr = result.register(self.comp_expr())
-                if result.error:
-                    return result
-                return result.success(DeclarationNode(var_name_token, comp_expr))
+                if self.tokens[self.pos].type == TokenType.EQ:
+                    self.advance()
+                    comp_expr = result.register(self.comp_expr())
+                    if result.error:
+                        return result
+                    declarations.append(DeclarationNode(var_name_token, comp_expr))
+                else:
+                    declarations.append(DeclarationNode(var_name_token))
+                
+                if self.tokens[self.pos].type != TokenType.COMMA:
+                    break
             else:
-                return result.success(DeclarationNode(var_name_token))
-        return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
+                return result.failure(InvalidSyntaxError("Expected identifier", self.tokens[self.pos].pos))
+        return result.success(InstructionsNode(declarations))
     
     def var_decl(self):
         result = ParseResult()
@@ -715,6 +744,16 @@ class Parser:
                 return result
             return result.success(assignment)
         return result.failure(InvalidSyntaxError('Expected "cal" or identifier', self.tokens[self.pos].pos))
+
+    def return_expr(self):
+        result = ParseResult()
+        self.advance()
+        
+        comp_expr = result.register(self.comp_expr())
+        if result.error:
+            return result
+        
+        return result.success(ReturnNode(comp_expr))
 
     def instr(self):
         result = ParseResult()
@@ -748,6 +787,11 @@ class Parser:
             if result.error:
                 return result
             return result.success(func_def)
+        elif self.tokens[self.pos].equals(TokenType.KEYWORD, "return"):
+            return_expr = result.register(self.return_expr())
+            if result.error:
+                return result
+            return result.success(return_expr)
 
         comp_expr = result.register(self.comp_expr())
         if result.error:
@@ -967,7 +1011,7 @@ class Interpreter:
             instructions = []
             for instruction_node in node.instruction_nodes:
                 value = result.register(self.evaluate(instruction_node, context))
-                if result.error:
+                if result.check_return():
                     return result
                 if value != None:
                     instructions.append(value)
@@ -982,17 +1026,17 @@ class Interpreter:
             elements = []
             for element in node.elements:
                 value = result.register(self.evaluate(element, context))
-                if result.error:
+                if result.check_return():
                     return result
                 if value != None:
                     elements.append(value)
             return result.success(elements)
         elif isinstance(node, BinaryOperationNode):
             left = result.register(self.evaluate(node.left, context))
-            if result.error:
+            if result.check_return():
                 return result
             right = result.register(self.evaluate(node.right, context))
-            if result.error:
+            if result.check_return():
                 return result
             try:
                 left + right
@@ -1026,7 +1070,7 @@ class Interpreter:
                 return result.success(left == right)
         elif isinstance(node, UnaryOperationNode):
             value = result.register(self.evaluate(node.node, context))
-            if result.error:
+            if result.check_return():
                 return result
             if node.token.type == TokenType.SUB:
                 value *= (-1)
@@ -1039,7 +1083,7 @@ class Interpreter:
                 result.failure(RuntimeError(f'Variable "{name}" is already defined', node.name_token.pos))
             if node.value_node != None:
                 value = result.register(self.evaluate(node.value_node, context))
-                if result.error:
+                if result.check_return():
                     return result
             else:
                 value = NULL
@@ -1050,7 +1094,7 @@ class Interpreter:
             if context.symbol_table.get_var(name) == None:
                 result.failure(RuntimeError(f'Variable "{name}" is not defined', node.name_token.pos))
             value = result.register(self.evaluate(node.value_node, context))
-            if result.error:
+            if result.check_return():
                 return result
             context.symbol_table.set_var(name, value)
             return result.success(value)
@@ -1062,7 +1106,7 @@ class Interpreter:
             if node.depth_elements != None:
                 for element in node.depth_elements:
                     element_value = result.register(self.evaluate(element, context))
-                    if result.error:
+                    if result.check_return():
                         return result
                     if not isinstance(value, list):
                         return result.failure(RuntimeError("Value is not of type array", node.name_token.pos))
@@ -1073,52 +1117,52 @@ class Interpreter:
         elif isinstance(node, IfNode):
             for condition, instructions in node.cases:
                 condition = result.register(self.evaluate(condition, context))
-                if result.error:
+                if result.check_return():
                     return result
                 if condition:
                     instructions = result.register(self.evaluate(instructions, context))
-                    if result.error:
+                    if result.check_return():
                         return result
                     return result.success(instructions)
             if node.else_case:
                 instructions = result.register(self.evaluate(node.else_case, context))
-                if result.error:
+                if result.check_return():
                     return result
                 return result.success(instructions)
             return result.success(None)
         elif isinstance(node, WhileNode):
             condition = result.register(self.evaluate(node.condition, context))
-            if result.error:
+            if result.check_return():
                 return result
             while condition:
                 instructions = result.register(self.evaluate(node.instructions, context))
-                if result.error:
+                if result.check_return():
                     return result
                 condition = result.register(self.evaluate(node.condition, context))
-                if result.error:
+                if result.check_return():
                     return result
             return result.success(1)
         elif isinstance(node, ForNode):
             init_expr = result.register(self.evaluate(node.init_expr, context))
-            if result.error:
+            if result.check_return():
                 return result
             condition = result.register(self.evaluate(node.condition, context))
-            if result.error:
+            if result.check_return():
                 return result
             while condition:
                 instructions = result.register(self.evaluate(node.instructions, context))
-                if result.error:
+                if result.check_return():
                     return result
                 update_expr = result.register(self.evaluate(node.update_expr, context))
-                if result.error:
+                if result.check_return():
                     return result
                 condition = result.register(self.evaluate(node.condition, context))
-                if result.error:
+                if result.check_return():
                     return result
             return result.success(1)
         elif isinstance(node, SayNode):
             value = result.register(self.evaluate(node.node, context))
-            if result.error:
+            if result.check_return():
                 return result
             print(value, end='')
             return result.success(value)
@@ -1135,7 +1179,7 @@ class Interpreter:
             for arg in node.arg_tokens:
                 arg_names.append(arg.value)
             instructions = node.instructions
-            func = Function(func_name, arg_names, instructions, node.name_token.pos)
+            func = Function(func_name, arg_names, instructions, node.name_token.pos, context)
             
             context.symbol_table.set_var(func_name, func)
             return result.success(func)
@@ -1143,7 +1187,7 @@ class Interpreter:
             args = []
 
             func = result.register(self.evaluate(node.node_to_call, context))
-            if result.error:
+            if result.check_return():
                 return result
             
             for arg in node.arguments:
@@ -1154,11 +1198,16 @@ class Interpreter:
                 value = result.register(func.call(args))
             except:
                 return result.failure(RuntimeError('Invalid function', node.pos))
-            
-            return result.success(NULL)
-
+            if result.check_return():
+                return result
+            return result.success(value)
+        elif isinstance(node, ReturnNode):
+            value = result.register(self.evaluate(node.value_node, context))
+            if result.check_return():
+                return result
+            return result.success_return(value)
         elif isinstance(node, Node):
-            return result.success(None)
+            return result.success_no_reset(None)
     
     def int_or_float(self, node):
         if node.token.type == TokenType.INT:
