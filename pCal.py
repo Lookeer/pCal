@@ -192,9 +192,10 @@ class DeclarationNode(Node):
         self.value_node = value_node
 
 class AssignmentNode(Node):
-    def __init__(self, name_token, value_node):
+    def __init__(self, name_token, value_node, depth_elements = None):
         self.name_token = name_token
         self.value_node = value_node
+        self.depth_elements = depth_elements
     
     def __repr__(self):
         return f'({self.name_token} = {self.value_node})'
@@ -268,6 +269,10 @@ class SymbolTable:
         return value
     
     def set_var(self, name, value):
+        if self.symbols.get(name, None) == None and self.parent:
+            if self.parent.get_var(name):
+                self.parent.set_var(name, value)
+                return
         self.symbols[name] = value
     
     def delete_var(self, name):
@@ -480,7 +485,8 @@ class Parser:
     # return-expr : "return" comp_expr
     # var-decl : declaration | assignment
     # declaration : "cal" IDENTIFIER ("=" comp-expr)? ("," IDENTIFIER ("=" comp-expr)?)*
-    # assignment : IDENTIFIER "=" comp-expr | term
+    # assignment : array-assignment "=" comp-expr
+    # array-assignment : IDENTIFIER ("[" comp-expr "]")*
     # say-instr : "say" "(" comp-expr ")"
     # comp-expr : math-expr ((LSR|LSE|GRT|GRE|NEQ) math-expr)* | NOT comp-expr
     # math-expr   : term ((ADD|SUB) term)*
@@ -594,7 +600,7 @@ class Parser:
                     args.append(arg)
                 if self.tokens[self.pos].type != TokenType.RPAREN:
                     return result.failure(InvalidSyntaxError('Expected ")"', self.tokens[self.pos].pos))
-            self.advance()
+                self.advance()
             return result.success(FuncCallNode(factor, args, start_pos))
         return result.success(factor)
 
@@ -693,14 +699,17 @@ class Parser:
     def assignment(self):
         result = ParseResult()
         var_name_token = self.tokens[self.pos]
-        self.advance()
+
+        depth_elements = result.register(self.array_assignment())
+        if result.error:
+            return result
         
         if self.tokens[self.pos].type == TokenType.EQ:
             self.advance()
             comp_expr = result.register(self.comp_expr())
             if result.error:
                 return result
-            return result.success(AssignmentNode(var_name_token, comp_expr))
+            return result.success(AssignmentNode(var_name_token, comp_expr, depth_elements))
         elif self.tokens[self.pos].type == TokenType.LPAREN:
             func_call = result.register(self.func_call(AccessNode(var_name_token)))
             if result.error:
@@ -841,7 +850,7 @@ class Parser:
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
             self.advance()
             return result.success(IfNode(cases, else_case))
-        return result.failure(InvalidSyntaxError("Expected \"end\"", self.tokens[self.pos].pos))
+        return result.failure(InvalidSyntaxError('Expected "end"', self.tokens[self.pos].pos))
     
     def if_parse(self):
         result = ParseResult()
@@ -880,6 +889,7 @@ class Parser:
         instructions = result.register(self.instructions())
         if result.error:
             return result
+
         if self.tokens[self.pos].equals(TokenType.KEYWORD, "end"):
             self.advance()
             return result.success(WhileNode(comp_expr, instructions))
@@ -948,6 +958,26 @@ class Parser:
             self.advance()
         
         return result.success(AccessNode(var_name, depth_elements))
+    
+    def array_assignment(self):
+        result = ParseResult()
+        
+        depth_elements = []
+        self.advance()
+
+        while self.tokens[self.pos].type == TokenType.LSQUARE:
+            self.advance()
+            comp_expr = result.register(self.comp_expr())
+            if result.error:
+                return result
+            
+            depth_elements.append(comp_expr)
+            
+            if self.tokens[self.pos].type != TokenType.RSQUARE:
+                return result.failure(InvalidSyntaxError('Expected "]"', self.tokens[self.pos].pos))
+            self.advance()
+        
+        return result.success(depth_elements)
             
 
     def array_expr(self):
@@ -1051,7 +1081,7 @@ class Interpreter:
             elif node.token.type == TokenType.DIV:
                 if right == 0:
                     return result.failure(RuntimeError("Division by 0", node.token.pos))
-                return result.success(left / right)
+                return result.success(int(left / right))
             elif node.token.type == TokenType.MOD:
                 if right == 0:
                     return result.failure(RuntimeError("Division by 0", node.token.pos))
@@ -1096,7 +1126,22 @@ class Interpreter:
             value = result.register(self.evaluate(node.value_node, context))
             if result.check_return():
                 return result
-            context.symbol_table.set_var(name, value)
+            if node.depth_elements:
+                var_symbol = context.symbol_table.get_var(name)
+                for i in range(len(node.depth_elements)):
+                    element_value = result.register(self.evaluate(node.depth_elements[i], context))
+                    if result.check_return():
+                        return result
+                    if not isinstance(var_symbol, list):
+                        return result.failure(RuntimeError("Value is not of type array", node.name_token.po))
+                    if element_value >= len(var_symbol) or element_value < -len(var_symbol):
+                        return result.failure(RuntimeError('Index is out of bounds', node.name_token.pos))
+                    if i == len(node.depth_elements) - 1:
+                        var_symbol[element_value] = value
+                    else:
+                        var_symbol = var_symbol[element_value]
+            else:
+                context.symbol_table.set_var(name, value)
             return result.success(value)
         elif isinstance(node, AccessNode):
             name = node.name_token.value
@@ -1196,7 +1241,9 @@ class Interpreter:
             
             try:
                 value = result.register(func.call(args))
-            except:
+                if result.check_return():
+                    return result
+            except AttributeError:
                 return result.failure(RuntimeError('Invalid function', node.pos))
             if result.check_return():
                 return result
@@ -1240,6 +1287,7 @@ def execute(file_name):
         return
     lexer = Lexer(file.read(), file_name)
     tokens = lexer.lex()
+
     if len(lexer.errors) > 0:
         for e in lexer.errors:
             print(e)
