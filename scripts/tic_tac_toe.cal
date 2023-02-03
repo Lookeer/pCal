@@ -24,12 +24,55 @@ funcal get_user_input():
         say("Please enter a valid position.\n")
     else:
         board[i][j] = currentPlayer
+        if check_win():
+            draw_board()
+            say(currentPlayer + " has won!")
+            playing = False
+            return True
+        end
+        if check_full():
+            draw_board()
+            say("It's a tie!")
+            playing = False
+            return True
+        end
         if currentPlayer == "X":
             currentPlayer = "0"
         else:
             currentPlayer = "X"
         end
     end
+end
+
+funcal check_win():
+    cal i
+    for i = 0, i < 3, i = i + 1:
+        if (board[i][0] == board[i][1]) + (board[i][1] == board[i][2]) == 2:
+            return True
+        end
+        if (board[0][i] == board[1][i]) + (board[1][i] == board[2][i]) == 2:
+            return True
+        end
+    end
+    if (board[0][0] == board[1][1]) + (board[1][1] == board[2][2]) == 2:
+        return True
+    end
+    if (board[0][2] == board[1][1]) + (board[1][1] == board[2][0]) == 2:
+        return True
+    end
+    return False
+end
+
+funcal check_full():
+    cal i, j
+    for i = 0, i < 3, i = i + 1:
+        for j = 0, j < 3, j = j + 1:
+            if (board[i][j] != "X") + (board[i][j] != "0") == 2:
+                return False
+            end
+        end
+    end
+    return True
 end
 
 while playing:
